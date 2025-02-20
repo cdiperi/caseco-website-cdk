@@ -3,11 +3,18 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as amplify from 'aws-cdk-lib/aws-amplify';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as targets from 'aws-cdk-lib/aws-route53-targets';
+
+export interface WebsiteStackProps extends cdk.StackProps {
+  // Allow passing in environment name
+  readonly environment?: string;
+}
 
 export class WebsiteStack extends cdk.Stack {
-  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+  constructor(scope: cdk.App, id: string, props?: WebsiteStackProps) {
     super(scope, id, props);
+
+    // Determine environment (default to 'beta' if not specified)
+    const environment = props?.environment || 'beta';
 
     // Import existing Route53 hosted zone
     const zone = route53.HostedZone.fromHostedZoneAttributes(this, 'Zone', {
@@ -30,9 +37,9 @@ export class WebsiteStack extends cdk.Stack {
       ]
     });
 
-    // Create Amplify app
+    // Create Amplify app with environment in the name
     const amplifyApp = new amplify.CfnApp(this, 'AmplifyApp', {
-      name: 'caseco-website',
+      name: `caseco-website-${environment}`,
       iamServiceRole: amplifyRole.roleArn,
       buildSpec: `
 version: 1
@@ -58,47 +65,28 @@ frontend:
           target: '/index.html',
           status: '404-200'
         }
+      ],
+      environmentVariables: [
+        {
+          name: 'NODE_ENV',
+          value: 'production'
+        },
+        {
+          name: 'REACT_APP_ENVIRONMENT',
+          value: environment
+        }
       ]
     });
 
-    // Create main branch
-    const mainBranch = new amplify.CfnBranch(this, 'MainBranch', {
-      appId: amplifyApp.attrAppId,
-      branchName: 'main',
-      enableAutoBuild: true,
-      framework: 'React',
-      stage: 'PRODUCTION'
-    });
-
-    // Make sure the branch is created before the domain
-    mainBranch.addDependency(amplifyApp);
-
-    // Create Amplify Domain Association for dev subdomain
-    const devDomain = new amplify.CfnDomain(this, 'AmplifyDomain', {
-      appId: amplifyApp.attrAppId,
-      domainName: 'diperidata.com',
-      subDomainSettings: [
-        {
-          branchName: mainBranch.branchName,
-          prefix: 'dev'
-        }
-      ],
-      enableAutoSubDomain: true,
-    });
-
-    // Add explicit dependencies
-    devDomain.addDependency(mainBranch);
-    devDomain.addDependency(amplifyApp);
-
-    // Output the Amplify App URL
-    new cdk.CfnOutput(this, 'AmplifyDevURL', {
-      value: `https://dev.diperidata.com`,
-      description: 'Development URL for the Amplify app'
-    });
-
+    // Output the Amplify App ID and Console URL
     new cdk.CfnOutput(this, 'AmplifyAppId', {
       value: amplifyApp.attrAppId,
       description: 'Amplify App ID'
+    });
+
+    new cdk.CfnOutput(this, 'AmplifyConsoleUrl', {
+      value: `https://${cdk.Stack.of(this).region}.console.aws.amazon.com/amplify/home?region=${cdk.Stack.of(this).region}#/${amplifyApp.attrAppId}`,
+      description: 'Link to Amplify Console'
     });
   }
 }
