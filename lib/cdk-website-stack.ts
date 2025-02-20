@@ -1,13 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
 import * as route53 from 'aws-cdk-lib/aws-route53';
-import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
-import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
-import * as targets from 'aws-cdk-lib/aws-route53-targets';
-import * as s3deploy from 'aws-cdk-lib/aws-s3-deployment';
-import { Certificate } from 'aws-cdk-lib/aws-certificatemanager';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as amplify from 'aws-cdk-lib/aws-amplify';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as targets from 'aws-cdk-lib/aws-route53-targets';
 
 export class WebsiteStack extends cdk.Stack {
   constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
@@ -19,55 +15,25 @@ export class WebsiteStack extends cdk.Stack {
       zoneName: 'diperidata.com'
     });
 
-    // Import existing certificate
-    const certificate = Certificate.fromCertificateArn(this, 'Certificate',
-      'arn:aws:acm:us-east-1:094671918355:certificate/506b6816-092e-4305-a1cb-2aefd561da59');
-
-    // Create S3 bucket for website content (as CloudFront origin)
-    const bucket = new s3.Bucket(this, 'WebsiteBucket', {
-      websiteIndexDocument: 'index.html',
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL
+    // Create wildcard certificate
+    const wildcardCertificate = new acm.Certificate(this, 'WildcardCertificate', {
+      domainName: 'diperidata.com',
+      subjectAlternativeNames: ['*.diperidata.com'],
+      validation: acm.CertificateValidation.fromDns(zone),
     });
 
-    // Create CloudFront distribution
-    const distribution = new cloudfront.Distribution(this, 'Distribution', {
-      defaultBehavior: {
-        origin: new origins.S3Origin(bucket),
-        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-      },
-      domainNames: ['diperidata.com', 'www.diperidata.com'],
-      certificate: certificate,
-      defaultRootObject: 'index.html',
-      priceClass: cloudfront.PriceClass.PRICE_CLASS_ALL,
-      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+    // Create Amplify IAM role
+    const amplifyRole = new iam.Role(this, 'AmplifyServiceRole', {
+      assumedBy: new iam.ServicePrincipal('amplify.amazonaws.com'),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName('AdministratorAccess-Amplify')
+      ]
     });
 
-    // Create Route53 records
-    new route53.ARecord(this, 'ARecord', {
-      zone,
-      recordName: 'diperidata.com',
-      target: route53.RecordTarget.fromAlias(
-        new targets.CloudFrontTarget(distribution)
-      ),
-    });
-
-    new route53.ARecord(this, 'WwwARecord', {
-      zone,
-      recordName: 'www.diperidata.com',
-      target: route53.RecordTarget.fromAlias(
-        new targets.CloudFrontTarget(distribution)
-      ),
-    });
-
-    // Set up Amplify app without direct GitHub connection yet
+    // Create Amplify app
     const amplifyApp = new amplify.CfnApp(this, 'AmplifyApp', {
       name: 'caseco-website',
-      iamServiceRole: new iam.Role(this, 'AmplifyServiceRole', {
-        assumedBy: new iam.ServicePrincipal('amplify.amazonaws.com'),
-        managedPolicies: [
-          iam.ManagedPolicy.fromAwsManagedPolicyName('AdministratorAccess-Amplify')
-        ]
-      }).roleArn,
+      iamServiceRole: amplifyRole.roleArn,
       buildSpec: `
 version: 1
 frontend:
@@ -85,10 +51,17 @@ frontend:
   cache:
     paths:
       - node_modules/**/*
-`
+`,
+      customRules: [
+        {
+          source: '/<*>',
+          target: '/index.html',
+          status: '404-200'
+        }
+      ]
     });
 
-    // Create placeholder branch - you'll connect the actual repo later
+    // Create main branch
     const mainBranch = new amplify.CfnBranch(this, 'MainBranch', {
       appId: amplifyApp.attrAppId,
       branchName: 'main',
@@ -97,29 +70,35 @@ frontend:
       stage: 'PRODUCTION'
     });
 
-    // Create Amplify Domain Association
-    new amplify.CfnDomain(this, 'AmplifyDomain', {
+    // Make sure the branch is created before the domain
+    mainBranch.addDependency(amplifyApp);
+
+    // Create Amplify Domain Association for dev subdomain
+    const devDomain = new amplify.CfnDomain(this, 'AmplifyDomain', {
       appId: amplifyApp.attrAppId,
       domainName: 'diperidata.com',
       subDomainSettings: [
         {
           branchName: mainBranch.branchName,
-          prefix: ''
-        },
-        {
-          branchName: mainBranch.branchName,
-          prefix: 'www'
+          prefix: 'dev'
         }
       ],
       enableAutoSubDomain: true,
     });
 
-    // Deploy content to S3 for CloudFront (as fallback or for static assets)
-    new s3deploy.BucketDeployment(this, 'DeployWebsite', {
-      sources: [s3deploy.Source.asset('./website-content')],
-      destinationBucket: bucket,
-      distribution,
-      distributionPaths: ['/*'],
+    // Add explicit dependencies
+    devDomain.addDependency(mainBranch);
+    devDomain.addDependency(amplifyApp);
+
+    // Output the Amplify App URL
+    new cdk.CfnOutput(this, 'AmplifyDevURL', {
+      value: `https://dev.diperidata.com`,
+      description: 'Development URL for the Amplify app'
+    });
+
+    new cdk.CfnOutput(this, 'AmplifyAppId', {
+      value: amplifyApp.attrAppId,
+      description: 'Amplify App ID'
     });
   }
 }
