@@ -13,6 +13,12 @@ new WebsiteStack(app, 'CasecoWebsiteBetaStack', {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION
   },
+  description: 'Beta environment for Caseco Website',
+  tags: {
+    Environment: 'beta',
+    Project: 'CasecoWebsite',
+    ManagedBy: 'CDK'
+  }
 });
 
 // Create prod environment
@@ -23,4 +29,10 @@ new WebsiteStack(app, 'CasecoWebsiteProdStack', {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION
   },
+  description: 'Production environment for Caseco Website',
+  tags: {
+    Environment: 'prod',
+    Project: 'CasecoWebsite',
+    ManagedBy: 'CDK'
+  }
 });
