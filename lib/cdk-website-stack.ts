@@ -46,7 +46,7 @@ export class WebsiteStack extends cdk.Stack {
       ]
     });
 
-    // Create Amplify app with environment in the name and updated build spec
+    // Create Amplify app with environment in the name
     const amplifyApp = new amplify.CfnApp(this, 'AmplifyApp', {
       name: `caseco-website-${environment}`,
       iamServiceRole: amplifyRole.roleArn,
@@ -64,7 +64,8 @@ frontend:
         - nvm use 20
         - node --version
         - npm --version
-        - NODE_ENV=development npm ci
+        - echo "Using npm install instead of npm ci for dependency resolution"
+        - NODE_ENV=development npm install
         - echo "Checking installed packages..."
         - npm list --depth=0
     build:
@@ -100,8 +101,7 @@ frontend:
           name: 'NODE_OPTIONS',
           value: '--max_old_space_size=4096'
         }
-      ],
-      platform: 'WEB',
+      ]
     });
 
     // Create branch configuration
