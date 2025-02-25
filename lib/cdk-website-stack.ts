@@ -3,7 +3,6 @@ import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as amplify from 'aws-cdk-lib/aws-amplify';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
 export interface WebsiteStackProps extends cdk.StackProps {
@@ -33,32 +32,11 @@ export class WebsiteStack extends cdk.Stack {
       validation: acm.CertificateValidation.fromDns(zone),
     });
 
-    // Grant the CDK deployment role permission to read the GitHub token parameter
-    // This assumes the CDK is being deployed with a role that has these permissions
-    // If you're deploying with a user, this isn't needed
-    const cdkDeploymentRoleName = 'cdk-hnb659fds-deploy-role-' + this.account + '-' + this.region;
-    const cdkDeploymentRole = iam.Role.fromRoleName(this, 'CdkDeploymentRole', cdkDeploymentRoleName);
-
-    // Add a policy statement granting access to the parameter
-    const ssmParameterArn = `arn:aws:ssm:${this.region}:${this.account}:parameter/caseco/github/access-token`;
-    const ssmPolicyStatement = new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: ['ssm:GetParameter', 'ssm:GetParameters'],
-      resources: [ssmParameterArn],
-    });
-
-    // Create a policy document with the statement
-    const ssmPolicy = new iam.Policy(this, 'SsmParameterAccessPolicy', {
-      statements: [ssmPolicyStatement],
-    });
-
-    // Attach the policy to the role
-    ssmPolicy.attachToRole(cdkDeploymentRole);
-
-    // Retrieve GitHub token from SSM Parameter Store
-    const githubToken = ssm.StringParameter.fromSecureStringParameterAttributes(this, 'GitHubToken', {
-      parameterName: '/caseco/github/access-token',
-    }).stringValue;
+    // Get GitHub token from context
+    const githubToken = this.node.tryGetContext('github-token');
+    if (!githubToken) {
+      throw new Error('GitHub token not provided in context. Please provide it using --context github-token=<token>');
+    }
 
     // Create Amplify IAM role
     const amplifyRole = new iam.Role(this, 'AmplifyServiceRole', {
@@ -68,7 +46,7 @@ export class WebsiteStack extends cdk.Stack {
       ]
     });
 
-    // Create Amplify app with environment in the name
+    // Create Amplify app with environment in the name and updated build spec
     const amplifyApp = new amplify.CfnApp(this, 'AmplifyApp', {
       name: `caseco-website-${environment}`,
       iamServiceRole: amplifyRole.roleArn,
@@ -81,9 +59,17 @@ frontend:
   phases:
     preBuild:
       commands:
-        - npm ci
+        - echo "Installing dependencies..."
+        - nvm install 20
+        - nvm use 20
+        - node --version
+        - npm --version
+        - NODE_ENV=development npm ci
+        - echo "Checking installed packages..."
+        - npm list --depth=0
     build:
       commands:
+        - echo "Building project..."
         - npm run build
   artifacts:
     baseDirectory: dist
@@ -92,7 +78,7 @@ frontend:
   cache:
     paths:
       - node_modules/**/*
-      - .vite/**/*
+      - .npm/**/*
 `,
       customRules: [
         {
@@ -109,8 +95,13 @@ frontend:
         {
           name: 'VITE_APP_ENVIRONMENT',
           value: environment
+        },
+        {
+          name: 'NODE_OPTIONS',
+          value: '--max_old_space_size=4096'
         }
-      ]
+      ],
+      platform: 'WEB',
     });
 
     // Create branch configuration
@@ -129,16 +120,21 @@ frontend:
     // Ensure branch is created after app
     branch.addDependency(amplifyApp);
 
-    // Manually configure custom domain paths for each environment
-    if (environment === 'prod') {
-      new cdk.CfnOutput(this, 'DomainInstructions', {
-        value: 'After deployment, go to Amplify Console and manually connect prod.diperidata.com to the main branch',
-      });
-    } else {
-      new cdk.CfnOutput(this, 'DomainInstructions', {
-        value: 'After deployment, go to Amplify Console and manually connect beta.diperidata.com to the beta branch',
-      });
-    }
+    // Add domain configuration
+    const domain = new amplify.CfnDomain(this, 'AmplifyDomain', {
+      appId: amplifyApp.attrAppId,
+      domainName: 'diperidata.com',
+      enableAutoSubDomain: false,
+      subDomainSettings: [
+        {
+          branchName: branchName,
+          prefix: environment
+        }
+      ]
+    });
+
+    // Ensure domain is created after branch
+    domain.addDependency(branch);
 
     // Output the Amplify App ID and Console URL
     new cdk.CfnOutput(this, 'AmplifyAppId', {
@@ -156,9 +152,9 @@ frontend:
       description: 'Default Amplify Branch URL'
     });
 
-    new cdk.CfnOutput(this, 'EnvironmentName', {
-      value: environment,
-      description: 'Environment Name'
+    new cdk.CfnOutput(this, 'CustomDomainUrl', {
+      value: `https://${environment}.diperidata.com`,
+      description: 'Custom Domain URL'
     });
   }
 }
